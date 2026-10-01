@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { getUser, saveUser } from "@/lib/redis";
+import { getUser, saveUser, checkOtpSendRate } from "@/lib/redis";
+import { studentEmail } from "@/lib/email";
 import type { RegisteredUser } from "@/lib/types";
 import { resolveAdmin } from "@/lib/admin";
 import { createSession, destroySession } from "@/lib/session";
@@ -8,11 +9,18 @@ function isStudentRoll(entry: string): boolean {
   return /^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9]{4,32}$/.test(entry);
 }
 
+function maskEmail(email: string): string {
+  const [local, domain] = email.split('@');
+  if (!domain) return email;
+  return local.slice(0, 3) + '***@' + domain;
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const entry = String(body.entry || "").trim();
     const first = String(body.name || "").trim();
+    const otp = body.otp ? String(body.otp).trim() : null;
 
     if (!entry || !first) {
       return NextResponse.json({ error: "Enter both entry number and first name." }, { status: 400 });
@@ -25,11 +33,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const name = first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
-    await destroySession();
+    const name = first.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
 
     const admin = resolveAdmin(entry);
     if (admin) {
+      await destroySession();
       await createSession({
         name,
         entry: admin.label,
@@ -57,59 +65,106 @@ export async function POST(req: Request) {
       );
     }
 
-    const existing = await getUser(entry);
+    const email = studentEmail(entry);
 
-    if (existing) {
-      if (existing.name.toLowerCase() !== name.toLowerCase()) {
+    if (!otp) {
+      const rateCheck = await checkOtpSendRate(entry);
+      if (!rateCheck.allowed) {
         return NextResponse.json(
-          {
-            error: "Name did not matched",
-            detail: "This entry number is already registered to another first name.",
-          },
-          { status: 403 }
+          { error: `Too many OTP requests. Try again later.` },
+          { status: 429 }
         );
       }
+
+      // Call external OTP service to generate and send
+      const res = await fetch("https://otp-service-beta.vercel.app/api/otp/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, type: "numeric", organization: "GatePass", subject: "GatePass verification code" })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        return NextResponse.json(
+          { error: errorData.error || "Failed to send OTP email. Please try again later." },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        ok: true,
+        step: 'otp_sent',
+        email: maskEmail(email)
+      });
+    } else {
+      // Call external OTP service to verify
+      const res = await fetch("https://otp-service-beta.vercel.app/api/otp/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, otp })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        return NextResponse.json({ error: errorData.error || "Invalid or expired OTP." }, { status: 400 });
+      }
+
+      const existing = await getUser(entry);
+
+      if (existing) {
+        if (existing.name.toLowerCase() !== name.toLowerCase()) {
+          return NextResponse.json(
+            {
+              error: "Name does not match",
+              detail: "This entry number is already registered to another first name.",
+            },
+            { status: 403 }
+          );
+        }
+        await destroySession();
+        await createSession({
+          name: existing.name,
+          entry: existing.entry,
+          isAdmin: false,
+          adminScope: null,
+        });
+        return NextResponse.json({
+          ok: true,
+          user: {
+            name: existing.name,
+            entry: existing.entry,
+            isAdmin: false,
+            adminScope: null,
+          },
+        });
+      }
+
+      const user: RegisteredUser = {
+        entry,
+        name,
+        email,
+        verifiedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      };
+      await saveUser(user);
+      await destroySession();
       await createSession({
-        name: existing.name,
-        entry: existing.entry,
+        name: user.name,
+        entry: user.entry,
         isAdmin: false,
         adminScope: null,
       });
+
       return NextResponse.json({
         ok: true,
         user: {
-          name: existing.name,
-          entry: existing.entry,
+          name: user.name,
+          entry: user.entry,
           isAdmin: false,
           adminScope: null,
         },
       });
     }
-
-    const user: RegisteredUser = {
-      entry,
-      name,
-      email: `${entry.toLowerCase()}@iitdabudhabi.ac.ae`,
-      verifiedAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-    };
-    await saveUser(user);
-    await createSession({
-      name: user.name,
-      entry: user.entry,
-      isAdmin: false,
-      adminScope: null,
-    });
-
-    return NextResponse.json({
-      ok: true,
-      user: {
-        name: user.name,
-        entry: user.entry,
-        isAdmin: false,
-        adminScope: null,
-      },
-    });
   } catch (e) {
     console.error(e);
     return NextResponse.json(

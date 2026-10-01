@@ -7,11 +7,25 @@ import { matchesExitScope, matchesEntryScope } from "@/lib/admin";
 
 const LOG_RETENTION_DAYS = 7;
 
+/** Abu Dhabi is UTC+4 — Vercel runs in UTC so we must offset manually. */
+function localHourAbuDhabi(): number {
+  return (new Date().getUTCHours() + 4) % 24;
+}
+
 function purgeOld(requests: GateRequest[]): GateRequest[] {
   const cutoff = Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
   return requests.filter((r) => {
-    if (r.status !== "returned" || !r.entryTime) return true;
-    return new Date(r.entryTime).getTime() >= cutoff;
+    // Clean up all terminal states after retention period
+    if (r.status === "returned" && r.entryTime) {
+      return new Date(r.entryTime).getTime() >= cutoff;
+    }
+    if (r.status === "rejected" && r.createdAt) {
+      return new Date(r.createdAt).getTime() >= cutoff;
+    }
+    if (r.status === "expired" && r.createdAt) {
+      return new Date(r.createdAt).getTime() >= cutoff;
+    }
+    return true;
   });
 }
 
@@ -39,10 +53,7 @@ export async function GET() {
       return NextResponse.json({ error: "Sign in required" }, { status: 401 });
     }
 
-    let requests = await getRequests();
-    const before = requests.length;
-    requests = purgeOld(requests);
-    if (requests.length !== before) await setRequests(requests);
+    const requests = await getRequests();
 
     return NextResponse.json(filterForSession(requests, session));
   } catch (e) {
@@ -85,14 +96,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Hostel must be KCA1, KCA2 or KCA3." }, { status: 400 });
     }
 
-    if (new Date().getHours() < 5) {
+    if (localHourAbuDhabi() < 5) {
       return NextResponse.json(
         { error: "Exit requests are closed from 12:00 AM to 5:00 AM" },
         { status: 403 }
       );
     }
 
-    const requests = await getRequests();
+    let requests = await getRequests();
+    // Clean up stale records while we're writing anyway
+    requests = purgeOld(requests);
     const entryLower = session.entry.toLowerCase();
 
     const active = requests.find(
