@@ -9,9 +9,9 @@ export interface GateRequest {
   name: string;
   entry: string;
   dest: string;
-  /** Hostel room number — exactly 3 digits */
+  /** Hostel room number - exactly 3 digits */
   room: string;
-  /** Bed letter A–F */
+  /** Bed letter A-F */
   bed: string;
   /** Hostel the student is assigned to / exited from */
   hostel: HostelId | string;
@@ -26,6 +26,21 @@ export interface GateRequest {
   entryRequestedAt: string | null;
 }
 
+export type ReportCategory = "cleanliness" | "maintenance";
+export type ReportStatus = "open" | "in_progress" | "resolved";
+
+export interface MaintenanceReport {
+  id: number;
+  category: ReportCategory;
+  description: string;
+  room: string;
+  hostel: HostelId | string;
+  status: ReportStatus;
+  reportedByEntry: string;
+  reportedByName: string;
+  createdAt: string;
+}
+
 export interface SessionUser {
   name: string;
   entry: string;
@@ -34,7 +49,7 @@ export interface SessionUser {
   adminScope: AdminScope | null;
 }
 
-/** Bound on first successful registration — entry number locks to this name forever. */
+/** Bound on first successful registration - entry number locks to this name forever. */
 export interface RegisteredUser {
   entry: string;
   name: string;
@@ -57,3 +72,4 @@ export const HOSTEL_IDS: HostelId[] = ["KCA1", "KCA2", "KCA3"];
 export function isHostelId(v: string): v is HostelId {
   return HOSTEL_IDS.includes(v as HostelId);
 }
+

@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { GateRequest, RegisteredUser, PendingOtp } from "./types";
+import type { GateRequest, RegisteredUser, PendingOtp, MaintenanceReport } from "./types";
 
 const KEY = "gatepass:requests";
 const SEQ_KEY = "gatepass:seq";
@@ -98,3 +98,23 @@ export async function checkOtpSendRate(entry: string): Promise<{ allowed: boolea
   }
   return { allowed: true };
 }
+
+const REPORTS_KEY = "gatepass:reports";
+const REPORTS_SEQ_KEY = "gatepass:reports_seq";
+
+export async function getReports(): Promise<MaintenanceReport[]> {
+  const redis = getRedis();
+  const data = await redis.get<MaintenanceReport[]>(REPORTS_KEY);
+  return data ?? [];
+}
+
+export async function setReports(reports: MaintenanceReport[]): Promise<void> {
+  const redis = getRedis();
+  await redis.set(REPORTS_KEY, reports);
+}
+
+export async function nextReportId(): Promise<number> {
+  const redis = getRedis();
+  return await redis.incr(REPORTS_SEQ_KEY);
+}
+
