@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./globals.css";
-import type { AdminScope, GateRequest, HostelId, SessionUser } from "@/lib/types";
+import type { AdminScope, GateRequest, HostelId, MaintenanceReport, SessionUser } from "@/lib/types";
 import { matchesEntryScope, matchesExitScope, scopeLabel } from "@/lib/admin";
 
 const REQUEST_TIMEOUT_MS = 3 * 60 * 1000;
@@ -147,7 +147,7 @@ function Toast({ msg, onDone }: { msg: string; onDone: () => void }) {
 export default function GatePassApp() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [requests, setRequests] = useState<GateRequest[]>([]);
-  const [view, setView] = useState<"student" | "security" | "outside" | "log">("student");
+  const [view, setView] = useState<"student" | "security" | "outside" | "log" | "reports">("student");
   const [dest, setDest] = useState("");
   const [room, setRoom] = useState("");
   const [bed, setBed] = useState("");
@@ -170,6 +170,13 @@ export default function GatePassApp() {
   const [logFilter, setLogFilter] = useState("all");
   const [sortKey, setSortKey] = useState<keyof GateRequest | null>(null);
   const [sortDir, setSortDir] = useState(1);
+  const [reports, setReports] = useState<MaintenanceReport[]>([]);
+  const [reportCat, setReportCat] = useState<"cleanliness" | "maintenance">("cleanliness");
+  const [reportDesc, setReportDesc] = useState("");
+  const [reportRoom, setReportRoom] = useState("");
+  const [reportHostel, setReportHostel] = useState<HostelId | "">(""); 
+  const [reportErr, setReportErr] = useState("");
+  const [reportLoading, setReportLoading] = useState(false);
   const bootstrapped = useRef(false);
 
   const showToast = useCallback((msg: string) => setToast(msg), []);
@@ -200,6 +207,18 @@ export default function GatePassApp() {
     }
   }, []);
 
+  const loadReports = useCallback(async () => {
+    try {
+      const res = await fetch("/api/reports", { credentials: "include" });
+      if (res.ok) {
+        const data = await res.json();
+        setReports(data.reports ?? []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
   useEffect(() => {
     if (bootstrapped.current) return;
     bootstrapped.current = true;
@@ -216,6 +235,7 @@ export default function GatePassApp() {
               localStorage.setItem(SESSION_KEY, JSON.stringify(u));
             } catch {}
             await loadRequests();
+            await loadReports();
             return;
           }
         }
@@ -230,9 +250,10 @@ export default function GatePassApp() {
     if (!user) return;
     const id = setInterval(() => {
       loadRequests();
+      loadReports();
     }, 5000);
     return () => clearInterval(id);
-  }, [user, loadRequests]);
+  }, [user, loadRequests, loadReports]);
 
   useEffect(() => {
     if (!user || user.isAdmin) return;
@@ -248,6 +269,7 @@ export default function GatePassApp() {
       localStorage.setItem(SESSION_KEY, JSON.stringify(u));
     } catch {}
     loadRequests();
+    loadReports();
   }
 
   async function signIn() {
@@ -757,6 +779,11 @@ export default function GatePassApp() {
                 My requests
               </button>
             )}
+            {!user.isAdmin && (
+              <button className={`tab ${view === "reports" ? "active" : ""}`} onClick={() => { setView("reports"); loadReports(); }}>
+                Reports
+              </button>
+            )}
             {user.isAdmin && (
               <>
                 <button className={`tab ${view === "security" ? "active" : ""}`} onClick={() => setView("security")}>
@@ -769,6 +796,9 @@ export default function GatePassApp() {
                 </button>
                 <button className={`tab ${view === "log" ? "active" : ""}`} onClick={() => setView("log")}>
                   Logs
+                </button>
+                <button className={`tab ${view === "reports" ? "active" : ""}`} onClick={() => { setView("reports"); loadReports(); }}>
+                  Reports
                 </button>
               </>
             )}
@@ -1298,6 +1328,159 @@ export default function GatePassApp() {
                 })()}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        {/* REPORTS: Cleanliness & Maintenance */}
+        <div className={`view ${view === "reports" ? "active" : ""}`}>
+          <h2>Cleanliness &amp; Maintenance</h2>
+          <p className="muted">
+            {user.isAdmin
+              ? adminScope === "all"
+                ? "All hostels · view and update status of all reports."
+                : `${adminScope} · reports filed for this hostel.`
+              : "Report an issue in your room or common areas. Staff will be notified."}
+          </p>
+
+          {/* Submit form — students only */}
+          {!user.isAdmin && (
+            <div className="card premium-card" style={{ marginBottom: 20 }}>
+              <h2 className="sub" style={{ marginTop: 0 }}>Submit a report</h2>
+              {reportErr && <div className="err show">{reportErr}</div>}
+              <div className="field-row three" style={{ marginBottom: 12 }}>
+                <div className="mf">
+                  <select
+                    value={reportCat}
+                    onChange={(e) => setReportCat(e.target.value as "cleanliness" | "maintenance")}
+                    style={{ width: "100%", padding: "12px 14px", background: "#f8f9fb", border: "1px solid #e0e3ea", borderRadius: 12, fontSize: 15 }}
+                  >
+                    <option value="cleanliness">🧹 Cleanliness</option>
+                    <option value="maintenance">🔧 Maintenance</option>
+                  </select>
+                </div>
+                <div className="mf">
+                  <input
+                    type="text"
+                    placeholder="Room (3 digits)"
+                    value={reportRoom}
+                    onChange={(e) => setReportRoom(e.target.value.replace(/\D/g, "").slice(0, 3))}
+                    inputMode="numeric"
+                    maxLength={3}
+                    style={{ width: "100%", padding: "12px 14px", background: "#f8f9fb", border: "1px solid #e0e3ea", borderRadius: 12, fontSize: 15 }}
+                  />
+                </div>
+                <div className="mf">
+                  <select
+                    value={reportHostel}
+                    onChange={(e) => setReportHostel(e.target.value as HostelId | "")}
+                    style={{ width: "100%", padding: "12px 14px", background: "#f8f9fb", border: "1px solid #e0e3ea", borderRadius: 12, fontSize: 15 }}
+                  >
+                    <option value="">Select hostel</option>
+                    <option value="KCA1">KCA1</option>
+                    <option value="KCA2">KCA2</option>
+                    <option value="KCA3">KCA3</option>
+                  </select>
+                </div>
+              </div>
+              <textarea
+                placeholder="Describe the issue in detail…"
+                value={reportDesc}
+                onChange={(e) => setReportDesc(e.target.value)}
+                maxLength={500}
+                rows={4}
+                style={{ width: "100%", padding: "12px 14px", background: "#f8f9fb", border: "1px solid #e0e3ea", borderRadius: 12, fontSize: 15, resize: "vertical", boxSizing: "border-box" }}
+              />
+              <div style={{ marginTop: 14 }}>
+                <button
+                  className="btn btn-premium"
+                  disabled={reportLoading}
+                  onClick={async () => {
+                    setReportErr("");
+                    if (!reportRoom || !/^\d{3}$/.test(reportRoom)) { setReportErr("Room must be exactly 3 digits"); return; }
+                    if (!reportHostel) { setReportErr("Select a hostel"); return; }
+                    if (!reportDesc.trim()) { setReportErr("Description is required"); return; }
+                    setReportLoading(true);
+                    try {
+                      const res = await fetch("/api/reports", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        body: JSON.stringify({ category: reportCat, description: reportDesc.trim(), room: reportRoom, hostel: reportHostel }),
+                      });
+                      const data = await res.json();
+                      if (!res.ok) { setReportErr(data.error || "Failed to submit"); return; }
+                      showToast("Report submitted successfully");
+                      setReportDesc("");
+                      setReportRoom("");
+                      setReportHostel("");
+                      await loadReports();
+                    } catch {
+                      setReportErr("Network error. Please try again.");
+                    } finally {
+                      setReportLoading(false);
+                    }
+                  }}
+                >
+                  {reportLoading ? "Submitting…" : "Submit report"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Reports list */}
+          <div className="card premium-card">
+            {reports.length === 0 ? (
+              <p className="empty">No reports found.</p>
+            ) : (
+              reports
+                .slice()
+                .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                .map((r) => (
+                  <div className="row row-stack" key={r.id} style={{ borderBottom: "1px solid #f0f2f5", paddingBottom: 12, marginBottom: 12 }}>
+                    <div className="who">
+                      <b>
+                        {r.category === "cleanliness" ? "🧹" : "🔧"} {r.category.charAt(0).toUpperCase() + r.category.slice(1)}
+                        {" · "}Room {r.room} · {r.hostel}
+                      </b>
+                      <span>{r.description}</span>
+                      <span style={{ color: "#8a9bb0", fontSize: 12, marginTop: 2 }}>
+                        Reported by {r.reportedByName} ({r.reportedByEntry}) · {new Date(r.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="actions" style={{ alignItems: "center", gap: 8 }}>
+                      <span className={`pill ${r.status === "open" ? "pending" : r.status === "in_progress" ? "out" : "returned"}`}>
+                        {r.status === "open" ? "Open" : r.status === "in_progress" ? "In progress" : "Resolved"}
+                      </span>
+                      {user.isAdmin && r.status !== "resolved" && (
+                        <>
+                          {r.status === "open" && (
+                            <button
+                              className="btn ghost sm"
+                              disabled={loading}
+                              onClick={async () => {
+                                const res = await fetch("/api/reports", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ action: "update_status", id: r.id, status: "in_progress" }) });
+                                if (res.ok) { showToast("Marked in progress"); await loadReports(); } else { const d = await res.json(); showToast(d.error || "Failed"); }
+                              }}
+                            >
+                              Mark in progress
+                            </button>
+                          )}
+                          <button
+                            className="btn ghost sm"
+                            disabled={loading}
+                            onClick={async () => {
+                              const res = await fetch("/api/reports", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ action: "update_status", id: r.id, status: "resolved" }) });
+                              if (res.ok) { showToast("Marked resolved"); await loadReports(); } else { const d = await res.json(); showToast(d.error || "Failed"); }
+                            }}
+                          >
+                            Resolve
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))
+            )}
           </div>
         </div>
       </div>
