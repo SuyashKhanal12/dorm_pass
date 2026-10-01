@@ -2,11 +2,7 @@ import { timingSafeEqual } from "crypto";
 import type { AdminScope } from "./types";
 import { isHostelId } from "./types";
 
-function isProd() {
-  return process.env.NODE_ENV === "production" || !!process.env.VERCEL;
-}
-
-function envCodes(key: string, devFallback: string): string[] {
+function envCodes(key: string): string[] {
   const raw = process.env[key];
   if (raw && raw.trim()) {
     return raw
@@ -14,11 +10,10 @@ function envCodes(key: string, devFallback: string): string[] {
       .map((s) => s.trim())
       .filter(Boolean);
   }
-  if (isProd()) return [];
-  return [devFallback];
+  return [];
 }
 
-function safeEqualStr(a: string, b: string): boolean {
+export function safeEqualStr(a: string, b: string): boolean {
   try {
     const ba = Buffer.from(a.toUpperCase(), "utf8");
     const bb = Buffer.from(b.toUpperCase(), "utf8");
@@ -44,10 +39,10 @@ export function resolveAdmin(entry: string): {
   const e = entry.trim();
   if (!e) return null;
 
-  const main = envCodes("GATEPASS_ADMIN_CODE", "IIT_D-AD__ADMIN");
-  const kca1 = envCodes("GATEPASS_ADMIN_KCA1", "IIT_D-AD__KCA1");
-  const kca2 = envCodes("GATEPASS_ADMIN_KCA2", "IIT_D-AD__KCA2");
-  const kca3 = envCodes("GATEPASS_ADMIN_KCA3", "IIT_D-AD__KCA3");
+  const main = envCodes("GATEPASS_ADMIN_CODE");
+  const kca1 = envCodes("GATEPASS_ADMIN_KCA1");
+  const kca2 = envCodes("GATEPASS_ADMIN_KCA2");
+  const kca3 = envCodes("GATEPASS_ADMIN_KCA3");
 
   if (matchesAny(e, main)) return { isAdmin: true, adminScope: "all", label: "Main admin" };
   if (matchesAny(e, kca1)) return { isAdmin: true, adminScope: "KCA1", label: "KCA1 staff" };

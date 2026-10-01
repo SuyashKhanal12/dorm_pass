@@ -79,7 +79,9 @@ function remainingMs(ts: string | null) {
 }
 
 function isExitCurfew() {
-  return new Date().getHours() < 5;
+  const utcHour = new Date().getUTCHours();
+  const localHour = (utcHour + 4) % 24; // UTC+4 for Abu Dhabi
+  return localHour < 5;
 }
 
 function isToday(d: Date) {
@@ -139,7 +141,7 @@ function Toast({ msg, onDone }: { msg: string; onDone: () => void }) {
     const t = setTimeout(onDone, 2800);
     return () => clearTimeout(t);
   }, [onDone]);
-  return <div className="toast show">{msg}</div>;
+  return <div className="toast show" role="alert" aria-live="polite">{msg}</div>;
 }
 
 export default function GatePassApp() {
@@ -153,6 +155,9 @@ export default function GatePassApp() {
   const [loginEntry, setLoginEntry] = useState("");
   const [loginName, setLoginName] = useState("");
   const [loginErr, setLoginErr] = useState("");
+  const [otpStep, setOtpStep] = useState(false);
+  const [otpCode, setOtpCode] = useState("");
+  const [otpEmail, setOtpEmail] = useState("");
   const [locErr, setLocErr] = useState("");
   const [toast, setToast] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -163,9 +168,8 @@ export default function GatePassApp() {
   const [outsideSearch, setOutsideSearch] = useState("");
   const [logSearch, setLogSearch] = useState("");
   const [logFilter, setLogFilter] = useState("all");
-  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<keyof GateRequest | null>(null);
   const [sortDir, setSortDir] = useState(1);
-  const [tick, setTick] = useState(0);
   const bootstrapped = useRef(false);
 
   const showToast = useCallback((msg: string) => setToast(msg), []);
@@ -226,7 +230,6 @@ export default function GatePassApp() {
     if (!user) return;
     const id = setInterval(() => {
       loadRequests();
-      setTick((t) => t + 1);
     }, 5000);
     return () => clearInterval(id);
   }, [user, loadRequests]);
@@ -251,19 +254,31 @@ export default function GatePassApp() {
     setLoginErr("");
     setLoading(true);
     try {
+      const body: Record<string, string> = { entry: loginEntry.trim(), name: loginName.trim() };
+      if (otpStep) {
+        body.otp = otpCode.trim();
+      }
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ entry: loginEntry.trim(), name: loginName.trim() }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) {
         setLoginErr(data.error || "Sign-in failed");
         return;
       }
-      showToast(data.user?.isAdmin ? "Welcome, staff" : "Signed in");
-      finishLogin(data.user as SessionUser);
+      if (!otpStep && data.step === "otp_sent") {
+        setOtpStep(true);
+        setOtpEmail(data.email || "");
+        showToast("OTP sent to your email");
+        return;
+      }
+      if (data.user) {
+        showToast(data.user.isAdmin ? "Welcome, staff" : "Signed in");
+        finishLogin(data.user as SessionUser);
+      }
     } catch {
       setLoginErr("Network error. Try again.");
     } finally {
@@ -610,8 +625,6 @@ export default function GatePassApp() {
         ? "Refresh"
         : "";
 
-  void tick;
-
   if (!user) {
     return (
       <>
@@ -624,51 +637,94 @@ export default function GatePassApp() {
             <h1 className="gt">GatePass</h1>
             <p className="login-tag">Hostel exit &amp; return · IIT Delhi Abu Dhabi</p>
 
-            <div className="mf">
-              <input
-                type="text"
-                id="ln-entry"
-                placeholder=" "
-                value={loginEntry}
-                onChange={(e) => setLoginEntry(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && signIn()}
-                autoComplete="off"
-              />
-              <label htmlFor="ln-entry">Entry / roll number</label>
-              <fieldset aria-hidden="true">
-                <legend>
-                  <span>Entry / roll number</span>
-                </legend>
-              </fieldset>
-            </div>
-            <div className="mf">
-              <input
-                type="text"
-                id="ln-name"
-                placeholder=" "
-                value={loginName}
-                onChange={(e) => setLoginName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && signIn()}
-                autoComplete="off"
-              />
-              <label htmlFor="ln-name">First name</label>
-              <fieldset aria-hidden="true">
-                <legend>
-                  <span>First name</span>
-                </legend>
-              </fieldset>
-            </div>
-            {loginErr && (
-              <div className="err show" style={{ textAlign: "center", margin: "-2px 0 10px" }}>
-                {loginErr}
-              </div>
-            )}
-            <button className="btn btn-premium" onClick={signIn} disabled={loading} style={{ minWidth: 160, marginTop: 8 }}>
-              {loading ? "Please wait…" : "Sign in"}
-            </button>
+            {otpStep ? (
+              <>
+                <p className="login-foot" style={{ marginTop: 0, marginBottom: 20 }}>
+                  Enter the 6-digit code sent to {otpEmail}
+                </p>
+                <div className="mf">
+                  <input
+                    type="text"
+                    id="ln-otp"
+                    placeholder=" "
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && signIn()}
+                    inputMode="numeric"
+                    maxLength={6}
+                    pattern="[0-9]*"
+                    autoComplete="one-time-code"
+                  />
+                  <label htmlFor="ln-otp">OTP Code</label>
+                  <fieldset aria-hidden="true">
+                    <legend>
+                      <span>OTP Code</span>
+                    </legend>
+                  </fieldset>
+                </div>
+                {loginErr && (
+                  <div className="err show" style={{ textAlign: "center", margin: "-2px 0 10px" }}>
+                    {loginErr}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: "12px", justifyContent: "center", marginTop: 8 }}>
+                  <button className="btn ghost" onClick={() => { setOtpStep(false); setOtpCode(""); }} disabled={loading}>
+                    Back
+                  </button>
+                  <button className="btn btn-premium" onClick={signIn} disabled={loading} style={{ minWidth: 120 }}>
+                    {loading ? "Please wait…" : "Verify"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mf">
+                  <input
+                    type="text"
+                    id="ln-entry"
+                    placeholder=" "
+                    value={loginEntry}
+                    onChange={(e) => setLoginEntry(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && signIn()}
+                    autoComplete="off"
+                  />
+                  <label htmlFor="ln-entry">Entry / roll number</label>
+                  <fieldset aria-hidden="true">
+                    <legend>
+                      <span>Entry / roll number</span>
+                    </legend>
+                  </fieldset>
+                </div>
+                <div className="mf">
+                  <input
+                    type="text"
+                    id="ln-name"
+                    placeholder=" "
+                    value={loginName}
+                    onChange={(e) => setLoginName(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && signIn()}
+                    autoComplete="off"
+                  />
+                  <label htmlFor="ln-name">First name</label>
+                  <fieldset aria-hidden="true">
+                    <legend>
+                      <span>First name</span>
+                    </legend>
+                  </fieldset>
+                </div>
+                {loginErr && (
+                  <div className="err show" style={{ textAlign: "center", margin: "-2px 0 10px" }}>
+                    {loginErr}
+                  </div>
+                )}
+                <button className="btn btn-premium" onClick={signIn} disabled={loading} style={{ minWidth: 160, marginTop: 8 }}>
+                  {loading ? "Please wait…" : "Sign in"}
+                </button>
 
-            <p className="login-foot">Students: roll number + first name · Staff: hostel code from office</p>
-            <p className="login-privacy">Your first name is locked to your roll number on first sign-in.</p>
+                <p className="login-foot">Students: roll number + first name · Staff: hostel code from office</p>
+                <p className="login-privacy">Your first name is locked to your roll number on first sign-in.</p>
+              </>
+            )}
           </div>
         </div>
         <div className="toast-wrap">{toast && <Toast msg={toast} onDone={() => setToast(null)} />}</div>
@@ -1198,7 +1254,7 @@ export default function GatePassApp() {
                             const v = x[sortKey];
                             return v ? new Date(v).getTime() : 0;
                           }
-                          return String((x as unknown as Record<string, unknown>)[sortKey!] ?? "").toLowerCase();
+                          return String(x[sortKey!] ?? "").toLowerCase();
                         };
                         const av = getVal(a);
                         const bv = getVal(b);
