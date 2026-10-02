@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequests, setRequests } from "@/lib/redis";
+import { getRequestById, saveRequest } from "@/lib/redis";
 import { isHostelId } from "@/lib/types";
 import { getSession } from "@/lib/session";
 import { canStaffApproveEntry, canStaffApproveExit } from "@/lib/admin";
@@ -25,13 +25,13 @@ export async function PATCH(req: Request, { params }: Params) {
       entryHostel?: string;
     };
 
-    const requests = await getRequests();
-    const idx = requests.findIndex((r) => r.id === id);
-    if (idx === -1) {
+    // Fetch only the single record — no full-array read, so concurrent
+    // operations on different records are fully independent and race-free.
+    const r = await getRequestById(id);
+    if (!r) {
       return NextResponse.json({ error: "Request not found" }, { status: 404 });
     }
 
-    const r = requests[idx];
     const now = new Date().toISOString();
     const actor = session.name;
 
@@ -136,8 +136,8 @@ export async function PATCH(req: Request, { params }: Params) {
         return NextResponse.json({ error: "Unknown action" }, { status: 400 });
     }
 
-    requests[idx] = r;
-    await setRequests(requests);
+    // Atomic write — only the key for this specific request is updated.
+    await saveRequest(r);
     return NextResponse.json(r);
   } catch (e) {
     console.error(e);
@@ -147,3 +147,4 @@ export async function PATCH(req: Request, { params }: Params) {
     );
   }
 }
+
