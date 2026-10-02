@@ -1,11 +1,21 @@
 import { Redis } from "@upstash/redis";
 import type { GateRequest, RegisteredUser, PendingOtp, MaintenanceReport } from "./types";
 
-const KEY = "gatepass:requests";
+// ─── Key schema ──────────────────────────────────────────────────────────────
+// gatepass:request:{id}   → individual GateRequest JSON (atomic per-record ops)
+// gatepass:request-ids    → Redis sorted set: score = id, member = id (index)
+// gatepass:seq            → auto-increment counter
+// gatepass:users          → hash: entry(lower) → RegisteredUser
+// gatepass:otp:{entry}    → pending OTP record (TTL-keyed)
+// gatepass:otp-rate:{e}   → rate-limit counter (TTL-keyed)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const REQUEST_PREFIX = "gatepass:request:";
+const REQUEST_IDS_KEY = "gatepass:request-ids"; // sorted set
 const SEQ_KEY = "gatepass:seq";
-const USERS_KEY = "gatepass:users"; // hash: entry(lower) -> RegisteredUser
-const OTP_PREFIX = "gatepass:otp:"; // key per entry
-const OTP_RATE_PREFIX = "gatepass:otp-rate:"; // rate limit login OTP requests
+const USERS_KEY = "gatepass:users";
+const OTP_PREFIX = "gatepass:otp:";
+const OTP_RATE_PREFIX = "gatepass:otp-rate:";
 
 function getRedis() {
   const url =
@@ -18,29 +28,93 @@ function getRedis() {
 
   if (!url || !token) {
     throw new Error(
-      "Missing Redis credentials. Expected KV_REST_API_URL + KV_REST_API_TOKEN (or UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN)."
+      "Missing Redis credentials. Expected KV_REST_API_URL + KV_REST_API_TOKEN " +
+      "(or UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN)."
     );
   }
-
   return new Redis({ url, token });
 }
 
-export async function getRequests(): Promise<GateRequest[]> {
-  const redis = getRedis();
-  const data = await redis.get<GateRequest[]>(KEY);
-  // Backfill fields for older records
-  return (data ?? []).map((r) => ({
+/** Backfill any fields that may be missing from legacy records. */
+function backfill(r: GateRequest): GateRequest {
+  return {
     ...r,
     room: r.room ?? "",
     bed: r.bed ?? "",
     hostel: r.hostel ?? "",
     entryHostel: r.entryHostel ?? null,
-  }));
+  };
 }
 
+// ─── Per-request atomic helpers ───────────────────────────────────────────────
+
+/**
+ * Atomically save (create or update) a single GateRequest.
+ * Only touches the key for this specific request — concurrent operations on
+ * different requests are fully independent.
+ */
+export async function saveRequest(request: GateRequest): Promise<void> {
+  const redis = getRedis();
+  const key = REQUEST_PREFIX + request.id;
+  // Pipeline: write the record AND register it in the index atomically.
+  const p = redis.pipeline();
+  p.set(key, request);
+  p.zadd(REQUEST_IDS_KEY, { score: request.id, member: String(request.id) });
+  await p.exec();
+}
+
+/** Fetch a single GateRequest by ID. Returns null if not found. */
+export async function getRequestById(id: number): Promise<GateRequest | null> {
+  const redis = getRedis();
+  const data = await redis.get<GateRequest>(REQUEST_PREFIX + id);
+  return data ? backfill(data) : null;
+}
+
+/**
+ * Fetch ALL requests ordered by ID ascending.
+ * Reads the ID index first, then batch-fetches each record.
+ */
+export async function getRequests(): Promise<GateRequest[]> {
+  const redis = getRedis();
+
+  // Retrieve all members from the sorted set (IDs in ascending order).
+  const ids = await redis.zrange<string[]>(REQUEST_IDS_KEY, 0, -1);
+  if (!ids || ids.length === 0) return [];
+
+  // Batch-fetch all individual request keys in a single pipeline.
+  const p = redis.pipeline();
+  for (const id of ids) {
+    p.get<GateRequest>(REQUEST_PREFIX + id);
+  }
+  const results = await p.exec<(GateRequest | null)[]>();
+
+  return results
+    .filter((r): r is GateRequest => r !== null)
+    .map(backfill);
+}
+
+/**
+ * Bulk-write an array of requests (used by purge/migration paths only).
+ * Prefer `saveRequest` for individual updates.
+ */
 export async function setRequests(requests: GateRequest[]): Promise<void> {
   const redis = getRedis();
-  await redis.set(KEY, requests);
+  if (requests.length === 0) return;
+  const p = redis.pipeline();
+  for (const r of requests) {
+    p.set(REQUEST_PREFIX + r.id, r);
+    p.zadd(REQUEST_IDS_KEY, { score: r.id, member: String(r.id) });
+  }
+  await p.exec();
+}
+
+/** Remove a single request and its index entry. */
+export async function deleteRequest(id: number): Promise<void> {
+  const redis = getRedis();
+  const p = redis.pipeline();
+  p.del(REQUEST_PREFIX + id);
+  p.zrem(REQUEST_IDS_KEY, String(id));
+  await p.exec();
 }
 
 export async function nextId(): Promise<number> {
@@ -51,8 +125,16 @@ export async function nextId(): Promise<number> {
 export async function clearAll(): Promise<void> {
   // Clears leave logs only — registered roll numbers / names stay bound.
   const redis = getRedis();
-  await redis.del(KEY);
-  await redis.del(SEQ_KEY);
+
+  // Collect all request keys from the index and delete them in bulk.
+  const ids = await redis.zrange<string[]>(REQUEST_IDS_KEY, 0, -1);
+  const p = redis.pipeline();
+  for (const id of ids) {
+    p.del(REQUEST_PREFIX + id);
+  }
+  p.del(REQUEST_IDS_KEY);
+  p.del(SEQ_KEY);
+  await p.exec();
 }
 
 export async function getUser(entry: string): Promise<RegisteredUser | null> {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequests, setRequests, nextId, clearAll } from "@/lib/redis";
+import { getRequests, saveRequest, deleteRequest, nextId, clearAll } from "@/lib/redis";
 import type { GateRequest, HostelId } from "@/lib/types";
 import { isHostelId } from "@/lib/types";
 import { getSession } from "@/lib/session";
@@ -12,21 +12,18 @@ function localHourAbuDhabi(): number {
   return (new Date().getUTCHours() + 4) % 24;
 }
 
-function purgeOld(requests: GateRequest[]): GateRequest[] {
+function isStale(r: GateRequest): boolean {
   const cutoff = Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  return requests.filter((r) => {
-    // Clean up all terminal states after retention period
-    if (r.status === "returned" && r.entryTime) {
-      return new Date(r.entryTime).getTime() >= cutoff;
-    }
-    if (r.status === "rejected" && r.createdAt) {
-      return new Date(r.createdAt).getTime() >= cutoff;
-    }
-    if (r.status === "expired" && r.createdAt) {
-      return new Date(r.createdAt).getTime() >= cutoff;
-    }
-    return true;
-  });
+  if (r.status === "returned" && r.entryTime) {
+    return new Date(r.entryTime).getTime() < cutoff;
+  }
+  if (r.status === "rejected" && r.createdAt) {
+    return new Date(r.createdAt).getTime() < cutoff;
+  }
+  if (r.status === "expired" && r.createdAt) {
+    return new Date(r.createdAt).getTime() < cutoff;
+  }
+  return false;
 }
 
 function filterForSession(
@@ -103,10 +100,14 @@ export async function POST(req: Request) {
       );
     }
 
-    let requests = await getRequests();
-    // Clean up stale records while we're writing anyway
-    requests = purgeOld(requests);
+    // Fetch all requests once to check for duplicate active requests and run purge.
+    const requests = await getRequests();
     const entryLower = session.entry.toLowerCase();
+
+    // Purge stale records opportunistically while we have the list.
+    // Each deletion is a targeted key delete — no full-array rewrite.
+    const staleIds = requests.filter(isStale).map((r) => r.id);
+    await Promise.all(staleIds.map((id) => deleteRequest(id)));
 
     const active = requests.find(
       (r) =>
@@ -139,8 +140,8 @@ export async function POST(req: Request) {
       entryRequestedAt: null,
     };
 
-    requests.push(newReq);
-    await setRequests(requests);
+    // Atomic write — only this one record is touched.
+    await saveRequest(newReq);
     return NextResponse.json(newReq, { status: 201 });
   } catch (e) {
     console.error(e);
@@ -175,3 +176,4 @@ export async function DELETE(req: Request) {
     );
   }
 }
+
