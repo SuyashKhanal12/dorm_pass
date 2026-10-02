@@ -1,9 +1,10 @@
 import { Redis } from "@upstash/redis";
-import type { GateRequest, RegisteredUser, MaintenanceReport } from "./types";
+import type { GateRequest, RegisteredUser, PendingOtp, MaintenanceReport } from "./types";
 
 const KEY = "gatepass:requests";
 const SEQ_KEY = "gatepass:seq";
 const USERS_KEY = "gatepass:users"; // hash: entry(lower) -> RegisteredUser
+const OTP_PREFIX = "gatepass:otp:"; // key per entry
 const OTP_RATE_PREFIX = "gatepass:otp-rate:"; // rate limit login OTP requests
 
 function getRedis() {
@@ -66,6 +67,22 @@ export async function saveUser(user: RegisteredUser): Promise<void> {
   await redis.hset(USERS_KEY, { [user.entry.toLowerCase()]: user });
 }
 
+export async function setPendingOtp(otp: PendingOtp, ttlSec = 600): Promise<void> {
+  const redis = getRedis();
+  const key = OTP_PREFIX + otp.entry.toLowerCase();
+  await redis.set(key, otp, { ex: Math.max(1, Math.min(ttlSec, 600)) });
+}
+
+export async function getPendingOtp(entry: string): Promise<PendingOtp | null> {
+  const redis = getRedis();
+  const data = await redis.get<PendingOtp>(OTP_PREFIX + entry.trim().toLowerCase());
+  return data ?? null;
+}
+
+export async function clearPendingOtp(entry: string): Promise<void> {
+  const redis = getRedis();
+  await redis.del(OTP_PREFIX + entry.trim().toLowerCase());
+}
 
 /** Returns true if allowed; false if rate-limited. Max 5 OTP sends per entry per 15 minutes. */
 export async function checkOtpSendRate(entry: string): Promise<{ allowed: boolean; retryAfterSec?: number }> {
@@ -99,5 +116,20 @@ export async function setReports(reports: MaintenanceReport[]): Promise<void> {
 export async function nextReportId(): Promise<number> {
   const redis = getRedis();
   return await redis.incr(REPORTS_SEQ_KEY);
+}
+
+export async function checkReportRateLimit(entry: string): Promise<{ allowed: boolean }> {
+  const redis = getRedis();
+  // Use UTC date as the daily bucket
+  const today = new Date().toISOString().slice(0, 10);
+  const key = `gatepass:report-rate:${entry.trim().toLowerCase()}:${today}`;
+  
+  const count = await redis.incr(key);
+  if (count === 1) {
+    // Expire safely after 25 hours to clean up Redis
+    await redis.expire(key, 25 * 60 * 60);
+  }
+  
+  return { allowed: count <= 3 };
 }
 

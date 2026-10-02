@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getUser, saveUser, checkOtpSendRate } from "@/lib/redis";
-import { studentEmail } from "@/lib/email";
+import { getUser, saveUser, checkOtpSendRate, setPendingOtp, getPendingOtp, clearPendingOtp } from "@/lib/redis";
+import { studentEmail, sendOtpEmail, generateOtp } from "@/lib/email";
 import type { RegisteredUser } from "@/lib/types";
 import { resolveAdmin } from "@/lib/admin";
 import { createSession, destroySession } from "@/lib/session";
@@ -76,17 +76,21 @@ export async function POST(req: Request) {
         );
       }
 
-      // Call external OTP service to generate and send
-      const res = await fetch("https://otp-service-beta.vercel.app/api/otp/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, type: "numeric", organization: "GatePass", subject: "GatePass verification code" })
+      const code = generateOtp();
+      await setPendingOtp({
+        entry,
+        name,
+        email,
+        otp: code,
+        expiresAt: Date.now() + 10 * 60 * 1000,
+        attempts: 0,
       });
 
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
+      const sendRes = await sendOtpEmail(email, name, code);
+
+      if (!sendRes.sent) {
         return NextResponse.json(
-          { error: errorData.error || "Failed to send OTP email. Please try again later." },
+          { error: sendRes.error || "Failed to send OTP email. Please try again later." },
           { status: 500 }
         );
       }
@@ -97,17 +101,22 @@ export async function POST(req: Request) {
         email: maskEmail(email)
       });
     } else {
-      // Call external OTP service to verify
-      const res = await fetch("https://otp-service-beta.vercel.app/api/otp/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, otp })
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        return NextResponse.json({ error: errorData.error || "Invalid or expired OTP." }, { status: 400 });
+      const pending = await getPendingOtp(entry);
+      if (!pending || pending.expiresAt < Date.now()) {
+        return NextResponse.json({ error: "OTP expired. Please request a new one." }, { status: 400 });
       }
+
+      if (pending.otp !== otp) {
+        pending.attempts++;
+        if (pending.attempts > 4) {
+          await clearPendingOtp(entry);
+          return NextResponse.json({ error: "Too many failed attempts. Request a new OTP." }, { status: 400 });
+        }
+        await setPendingOtp(pending);
+        return NextResponse.json({ error: "Incorrect code." }, { status: 400 });
+      }
+
+      await clearPendingOtp(entry);
 
       const existing = await getUser(entry);
 

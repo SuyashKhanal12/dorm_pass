@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { getReports, setReports, nextReportId } from "@/lib/redis";
+import { getReports, setReports, nextReportId, checkReportRateLimit } from "@/lib/redis";
 import type { MaintenanceReport, ReportCategory, ReportStatus } from "@/lib/types";
 
 const VALID_CATEGORIES: ReportCategory[] = ["cleanliness", "maintenance"];
@@ -102,6 +102,12 @@ export async function POST(req: Request) {
   }
   if (!["KCA1", "KCA2", "KCA3"].includes(hostel)) {
     return NextResponse.json({ error: "Hostel must be KCA1, KCA2 or KCA3" }, { status: 400 });
+  }
+
+  // Enforce rate limit (max 3 reports per day per student)
+  const rateLimit = await checkReportRateLimit(session.entry);
+  if (!rateLimit.allowed) {
+    return NextResponse.json({ error: "You can only submit 3 reports per day. Please try again tomorrow." }, { status: 429 });
   }
 
   const newReport: MaintenanceReport = {
