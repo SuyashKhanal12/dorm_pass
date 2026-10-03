@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getUser, saveUser, checkOtpSendRate, setPendingOtp, getPendingOtp, clearPendingOtp } from "@/lib/redis";
-import { studentEmail, sendOtpEmail, generateOtp } from "@/lib/email";
+import { getUser, saveUser, checkOtpSendRate } from "@/lib/redis";
+import { studentEmail } from "@/lib/email";
 import type { RegisteredUser } from "@/lib/types";
 import { resolveAdmin } from "@/lib/admin";
 import { createSession, destroySession } from "@/lib/session";
@@ -76,21 +76,24 @@ export async function POST(req: Request) {
         );
       }
 
-      const code = generateOtp();
-      await setPendingOtp({
-        entry,
-        name,
-        email,
-        otp: code,
-        expiresAt: Date.now() + 10 * 60 * 1000,
-        attempts: 0,
+      // Generate and send OTP using the external service
+      const genRes = await fetch("https://otp-service-beta.vercel.app/api/otp/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          type: "numeric",
+          organization: "GatePass",
+          subject: "GatePass verification code"
+        }),
       });
 
-      const sendRes = await sendOtpEmail(email, name, code);
-
-      if (!sendRes.sent) {
+      if (!genRes.ok) {
+        const errorData = await genRes.json().catch(() => ({}));
         return NextResponse.json(
-          { error: sendRes.error || "Failed to send OTP email. Please try again later." },
+          { error: errorData.message || "Failed to send OTP email via external service." },
           { status: 500 }
         );
       }
@@ -101,22 +104,22 @@ export async function POST(req: Request) {
         email: maskEmail(email)
       });
     } else {
-      const pending = await getPendingOtp(entry);
-      if (!pending || pending.expiresAt < Date.now()) {
-        return NextResponse.json({ error: "OTP expired. Please request a new one." }, { status: 400 });
-      }
+      // Verify OTP using the external service
+      const verifyRes = await fetch("https://otp-service-beta.vercel.app/api/otp/verify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          otp
+        }),
+      });
 
-      if (pending.otp !== otp) {
-        pending.attempts++;
-        if (pending.attempts > 4) {
-          await clearPendingOtp(entry);
-          return NextResponse.json({ error: "Too many failed attempts. Request a new OTP." }, { status: 400 });
-        }
-        await setPendingOtp(pending);
-        return NextResponse.json({ error: "Incorrect code." }, { status: 400 });
+      if (!verifyRes.ok) {
+        const errorData = await verifyRes.json().catch(() => ({}));
+        return NextResponse.json({ error: errorData.message || "Incorrect or expired code." }, { status: 400 });
       }
-
-      await clearPendingOtp(entry);
 
       const existing = await getUser(entry);
 
