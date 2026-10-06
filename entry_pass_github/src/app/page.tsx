@@ -144,6 +144,8 @@ function Toast({ msg, onDone }: { msg: string; onDone: () => void }) {
   return <div className="toast show" role="alert" aria-live="polite">{msg}</div>;
 }
 
+const COMMON_DESTS = ["Library", "Mazyad Mall", "Airport", "Hospital", "Home"];
+
 export default function GatePassApp() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [requests, setRequests] = useState<GateRequest[]>([]);
@@ -244,7 +246,20 @@ export default function GatePassApp() {
         localStorage.removeItem(SESSION_KEY);
       } catch {}
     })();
-  }, [loadRequests]);
+  }, [loadRequests, loadReports]);
+
+  // Auto-fill room and bed from past requests
+  useEffect(() => {
+    if (!user || user.isAdmin || view !== "student" || requests.length === 0) return;
+    if (!room && !bed) {
+      const myRequests = requests.filter((r) => r.entry.toLowerCase() === user.entry.toLowerCase());
+      if (myRequests.length > 0) {
+        const latest = myRequests.reduce((a, b) => new Date(a.createdAt).getTime() > new Date(b.createdAt).getTime() ? a : b);
+        if (latest.room) setRoom(latest.room);
+        if (latest.bed) setBed(latest.bed);
+      }
+    }
+  }, [requests, user, view, room, bed]);
 
   useEffect(() => {
     if (!user) return;
@@ -694,7 +709,7 @@ export default function GatePassApp() {
                     Back
                   </button>
                   <button className="btn btn-premium" onClick={signIn} disabled={loading} style={{ minWidth: 120 }}>
-                    {loading ? "Please wait…" : "Verify"}
+                    {loading ? <span className="spinner"></span> : "Verify"}
                   </button>
                 </div>
               </>
@@ -740,7 +755,7 @@ export default function GatePassApp() {
                   </div>
                 )}
                 <button className="btn btn-premium" onClick={signIn} disabled={loading} style={{ minWidth: 160, marginTop: 8 }}>
-                  {loading ? "Please wait…" : "Sign in"}
+                  {loading ? <span className="spinner"></span> : "Sign in"}
                 </button>
 
                 <p className="login-foot">Students: roll number + first name · Staff: hostel code from office</p>
@@ -862,7 +877,13 @@ export default function GatePassApp() {
                   </legend>
                 </fieldset>
               </div>
-              <p className="hint">e.g. market, home, library</p>
+              <div className="quick-dests">
+                {COMMON_DESTS.map((d) => (
+                  <button key={d} className="chip-dest" onClick={() => setDest(d)}>
+                    {d}
+                  </button>
+                ))}
+              </div>
 
               <div className="field-row three">
                 <div className="mf">
