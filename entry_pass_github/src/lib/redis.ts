@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { GateRequest, RegisteredUser, PendingOtp, MaintenanceReport } from "./types";
+import type { GateRequest, RegisteredUser, MaintenanceReport } from "./types";
 
 // ─── Key schema ──────────────────────────────────────────────────────────────
 // gatepass:request:{id}   → individual GateRequest JSON (atomic per-record ops)
@@ -93,20 +93,7 @@ export async function getRequests(): Promise<GateRequest[]> {
     .map(backfill);
 }
 
-/**
- * Bulk-write an array of requests (used by purge/migration paths only).
- * Prefer `saveRequest` for individual updates.
- */
-export async function setRequests(requests: GateRequest[]): Promise<void> {
-  const redis = getRedis();
-  if (requests.length === 0) return;
-  const p = redis.pipeline();
-  for (const r of requests) {
-    p.set(REQUEST_PREFIX + r.id, r);
-    p.zadd(REQUEST_IDS_KEY, { score: r.id, member: String(r.id) });
-  }
-  await p.exec();
-}
+
 
 /** Remove a single request and its index entry. */
 export async function deleteRequest(id: number): Promise<void> {
@@ -149,22 +136,7 @@ export async function saveUser(user: RegisteredUser): Promise<void> {
   await redis.hset(USERS_KEY, { [user.entry.toLowerCase()]: user });
 }
 
-export async function setPendingOtp(otp: PendingOtp, ttlSec = 600): Promise<void> {
-  const redis = getRedis();
-  const key = OTP_PREFIX + otp.entry.toLowerCase();
-  await redis.set(key, otp, { ex: Math.max(1, Math.min(ttlSec, 600)) });
-}
 
-export async function getPendingOtp(entry: string): Promise<PendingOtp | null> {
-  const redis = getRedis();
-  const data = await redis.get<PendingOtp>(OTP_PREFIX + entry.trim().toLowerCase());
-  return data ?? null;
-}
-
-export async function clearPendingOtp(entry: string): Promise<void> {
-  const redis = getRedis();
-  await redis.del(OTP_PREFIX + entry.trim().toLowerCase());
-}
 
 /** Returns true if allowed; false if rate-limited. Max 5 OTP sends per entry per 15 minutes. */
 export async function checkOtpSendRate(entry: string): Promise<{ allowed: boolean; retryAfterSec?: number }> {

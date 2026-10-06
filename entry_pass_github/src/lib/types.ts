@@ -58,14 +58,6 @@ export interface RegisteredUser {
   createdAt: string;
 }
 
-export interface PendingOtp {
-  entry: string;
-  name: string;
-  email: string;
-  otp: string;
-  expiresAt: number;
-  attempts: number;
-}
 
 export const HOSTEL_IDS: HostelId[] = ["KCA1", "KCA2", "KCA3"];
 

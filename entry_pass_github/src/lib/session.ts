@@ -94,11 +94,4 @@ export async function destroySession(): Promise<void> {
   }
 }
 
-export function requireSession(session: SessionData | null): SessionData {
-  if (!session) {
-    const err = new Error("Unauthorized");
-    (err as Error & { status: number }).status = 401;
-    throw err;
-  }
-  return session;
-}
+

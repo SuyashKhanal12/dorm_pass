@@ -77,7 +77,8 @@ export async function POST(req: Request) {
       }
 
       // Generate and send OTP using the external service
-      const genRes = await fetch("https://otp-service-beta.vercel.app/api/otp/generate", {
+      const otpUrl = process.env.OTP_SERVICE_URL || "https://otp-service-beta.vercel.app";
+      const genRes = await fetch(`${otpUrl}/api/otp/generate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -104,8 +105,8 @@ export async function POST(req: Request) {
         email: maskEmail(email)
       });
     } else {
-      // Verify OTP using the external service
-      const verifyRes = await fetch("https://otp-service-beta.vercel.app/api/otp/verify", {
+      const otpUrl = process.env.OTP_SERVICE_URL || "https://otp-service-beta.vercel.app";
+      const verifyRes = await fetch(`${otpUrl}/api/otp/verify`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
