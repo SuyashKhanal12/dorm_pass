@@ -53,6 +53,8 @@ All tokens live at the top of `src/app/globals.css`.
 
 ## Project structure
 
+The app lives in the `entry_pass_github/` folder. The paths below are relative to it.
+
 ```
 src/
 ├── app/
@@ -89,6 +91,7 @@ src/
 Requires Node.js 18.18 or later and an Upstash Redis database.
 
 ```bash
+cd entry_pass_github
 npm install
 cp .env.example .env.local   # then fill in the values
 npm run dev
@@ -121,7 +124,7 @@ Staff codes accept a comma-separated list, for example `CODE1,CODE2`.
 
 ## Deploying to Vercel
 
-1. Push to GitHub and import the repository in Vercel. Leave the root directory empty.
+1. Push to GitHub and import the repository in Vercel. Set the root directory to `entry_pass_github`.
 2. Add the environment variables above under **Settings, Environment Variables**.
 3. Deploy. Vercel provides the HTTPS that the Geolocation API requires.
 
@@ -170,4 +173,4 @@ Staff codes accept a comma-separated list, for example `CODE1,CODE2`.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
